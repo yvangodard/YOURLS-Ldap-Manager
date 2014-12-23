@@ -2,7 +2,7 @@
 /*
 Plugin Name: LDAP Manager
 Description: Gestion des connexions avec un ou plusieurs Active Directory
-Version: 1.0
+Version: 1.1
 Author: Jérôme LAFFORGUE
 Author URI: http://www.imjweb.fr/
 */
@@ -261,7 +261,11 @@ yourls_add_action('yourls_ajax_delete_serveur', 'ajax_delete_serveur');
 function ldap_is_valid_user($value){
 
 	// doesn't work for API...
-	if (yourls_is_API()) return $value;
+
+	if (yourls_is_API()){
+		return ldap_pre_login_signature();
+	}
+
 
 	if(defined('YOURLS_USER')){
 		return true;
@@ -298,7 +302,15 @@ function ldap_is_valid_user($value){
 	}
 	
 }
-yourls_add_filter( 'is_valid_user', 'ldap_is_valid_user' );
+yourls_add_filter('is_valid_user', 'ldap_is_valid_user' );
+
+function ldap_pre_login_signature(){
+	$signature = ($_GET['signature'])? $_GET['signature'] : '';
+	$signature = ($_POST['signature'])? $_POST['signature'] : '';
+	if (yourls_is_API()) return search_signature_ad($signature);
+	return false;
+}
+//yourls_add_action('pre_login', 'ldap_pre_login_signature');
 
 /**
 * Déconnexion du Yourls et suppression de la session LDAP
@@ -311,7 +323,7 @@ yourls_add_action('logout', 'logout_ldap');
 
 
 /**
- * Test connexion à un serveur AD
+ *  Test connexion à un serveur AD
  */
 function connexion_checker($ldap_params){
 	
@@ -341,6 +353,44 @@ function connexion_checker($ldap_params){
 	}
 	
 	return array('ldap_connect' => $ldapbind, 'count_users' => $number_returned, 'ldap_users' => $ldap_users);;
+}
+
+/**
+ *  On cherche si la signature correspond à un identifiant présent dans un des AD enregistrés
+ */
+function search_signature_ad($signature){
+	
+	$mysqli = new mysqli(YOURLS_DB_HOST, YOURLS_DB_USER, YOURLS_DB_PASS, YOURLS_DB_NAME);
+	$serveurs = $mysqli->query('SELECT * FROM '.YOURLS_DB_PREFIX.'ldap');
+		
+	while($row = $serveurs->fetch_array())
+	{
+		
+		$datas = unserialize(base64_decode($row['datas']));
+
+		$ldap = ldap_connect($datas['ldap_host'], $datas['ldap_port']);
+		ldap_set_option($ldap, LDAP_OPT_PROTOCOL_VERSION, 3);
+		ldap_set_option($ldap, LDAP_OPT_REFERRALS, 0);
+		
+		$ldapbind = ldap_bind($ldap, $datas['ldap_base_dn'], $datas['ldap_password']);
+			
+		$number_returned = 0;
+		$attributes_ad = array("displayName","uid","cn","givenName","sn","mail");
+		
+		if (!($search=@ldap_search($ldap, $datas['ldap_dnracine'], $datas['ldap_filtres'], $attributes_ad))){
+			echo("Unable to search ldap server<br>");
+		} else {
+			$number_returned = ldap_count_entries($ldap,$search);
+			$users = ldap_get_entries($ldap, $search);
+			foreach($users as $user){
+				//echo '<pre>'; var_dump($user); echo '</pre>';
+				if(isset($user['uid'][0]) && $signature ==  yourls_auth_signature($user['uid'][0])){
+					return true;
+				}
+			}
+		}
+	}
+	return false;
 }
 
 /**
